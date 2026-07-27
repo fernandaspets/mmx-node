@@ -6,6 +6,7 @@
  */
 
 #include <mmx/vm/Engine.h>
+#include <mmx/vm/EngineWASM.h>
 #include <mmx/vm_interface.h>
 #include <mmx/uint128.hpp>
 #include <mmx/helpers.h>
@@ -377,7 +378,7 @@ void set_args(std::shared_ptr<vm::Engine> engine, const std::vector<vnx::Variant
 void execute(std::shared_ptr<vm::Engine> engine, const contract::method_t& method, const bool commit)
 {
 	engine->begin(method.entry_point);
-	engine->run();
+	vm::run_with_wasm_fallback(*engine);
 
 	if(!method.is_const && commit) {
 		engine->commit();

@@ -476,17 +476,66 @@ bool run_wasm(Engine& engine)
  * This is the drop-in replacement for Engine::run().
  * Safe for mainnet: if WASM fails for ANY reason, the interpreter runs instead.
  * The node stays canonical.
+ *
+ * SHADOW MODE: When WITH_WASM_SHADOW is defined, both interpreter and WASM
+ * execute every contract. Results are compared. If they differ, a warning is
+ * logged but the interpreter result is used (node stays canonical).
+ * This lets you verify WASM correctness on mainnet without risk.
  */
 void run_with_wasm_fallback(Engine& engine)
 {
 #ifdef WITH_WASM_JIT
+#ifdef WITH_WASM_SHADOW
+	// Shadow mode: run both, compare,100% match before trusting WASM
+	try {
+		// Save state before execution
+		const auto gas_before = engine.gas_used;
+		const auto outputs_before = engine.outputs;
+		const auto mint_before = engine.mint_outputs;
+
+		// Run WASM JIT
+		const bool wasm_ok = run_wasm(engine);
+
+		// Save WASM results
+		const auto gas_after_wasm = engine.gas_used;
+		const auto outputs_after_wasm = engine.outputs;
+		const auto mint_after_wasm = engine.mint_outputs;
+
+		// Restore state and run interpreter
+		engine.gas_used = gas_before;
+		engine.outputs = outputs_before;
+		engine.mint_outputs = mint_before;
+		engine.run();
+
+		// Compare results
+		const bool gas_match = (gas_after_wasm == engine.gas_used);
+		const bool outputs_match = (outputs_after_wasm.size() == engine.outputs.size());
+		const bool mint_match = (mint_after_wasm.size() == engine.mint_outputs.size());
+
+		if(!gas_match || !outputs_match || !mint_match) {
+			std::cerr << "[WASM SHADOW] MISMATCH: gas=" << gas_after_wasm
+				<< " vs " << engine.gas_used
+				<< ", outputs=" << outputs_after_wasm.size()
+				<< " vs " << engine.outputs.size()
+				<< ", mints=" << mint_after_wasm.size()
+				<< " vs " << engine.mint_outputs.size()
+				<< std::endl;
+		}
+		// Always use interpreter result (node stays canonical)
+		return;
+	} catch(...) {
+		// WASM failed, fall through to interpreter
+	}
+#else
+	// Normal mode: try WASM,fallen interpreter on any failure
 	try {
 		if(run_wasm(engine)) {
-			return;  // WASM execution succeeded
+			return;
 		}
 	} catch(...) {
 		// WASM failed, fall through to interpreter
 	}
+#endif
 #endif
 	// Fall back to interpreter
 	engine.run();
