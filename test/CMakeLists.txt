@@ -20,6 +20,13 @@ add_executable(mmx_tests mmx_tests.cpp)
 add_executable(vm_engine_tests vm/engine_tests.cpp)
 add_executable(vm_storage_tests vm/storage_tests.cpp)
 
+if(WITH_WASM_JIT)
+	add_executable(test_wasm_jit test_wasm_jit.cpp)
+	target_link_libraries(test_wasm_jit mmx_vm ${WASMTIME_LIBRARIES})
+	target_include_directories(test_wasm_jit PRIVATE ${WASMTIME_INCLUDE_DIRS})
+	target_compile_definitions(test_wasm_jit PRIVATE WITH_WASM_JIT)
+endif()
+
 target_link_libraries(test_engine mmx_vm)
 target_link_libraries(test_mnemonic mmx_iface)
 target_link_libraries(test_database mmx_db mmx_iface)
