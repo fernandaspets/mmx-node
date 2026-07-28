@@ -27,6 +27,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#include <map>
 
 namespace mmx {
 namespace vm {
@@ -78,15 +79,15 @@ static void write_uint256(Engine* eng, int32_t addr, const uint256_t& value) {
  * Register all host functions into a wasmtime Linker.
  * Each host function is a lambda that calls the corresponding Engine method.
  */
-static void register_host_functions(Linker& linker, Store& store, WASMHostContext& ctx) {
+void register_host_functions(Linker& linker, Store& store, WASMHostContext& ctx) {
 	auto cx = store.context();
 
 	// --- Gas + memory ---
 
 	linker.define(cx, "env", "use_gas",
 		Func::wrap(cx, [&ctx](int32_t cost) -> Result<std::monostate, Trap> {
-			ctx.gas_used += cost;
-			if(ctx.gas_used > ctx.gas_limit) {
+			ctx.engine->gas_used += cost;
+			if(ctx.engine->gas_used > ctx.gas_limit) {
 				ctx.out_of_gas = true;
 				return Trap("out of gas");
 			}
@@ -407,6 +408,7 @@ bool run_wasm(Engine& engine)
 	WATGenerator generator(engine.code);
 	std::string wat = generator.generate();
 	if(wat.empty()) {
+		std::cerr << "[WASM] WAT generation failed" << std::endl;
 		return false;
 	}
 
@@ -423,7 +425,8 @@ bool run_wasm(Engine& engine)
 	// Step 3: Compile WAT → WASM via wasmtime (accepts WAT text directly)
 	auto wat_result = wasmtime::Module::compile(wasm_engine, wat);
 	if(!wat_result) {
-		return false;  // WAT compilation failed
+		std::cerr << "[WASM] WAT compile failed: " << wat_result.err().message() << std::endl;
+		return false;
 	}
 	auto module = wat_result.ok();
 
@@ -435,7 +438,7 @@ bool run_wasm(Engine& engine)
 	// Step 5: Instantiate
 	auto inst_result = linker.instantiate(store, module);
 	if(!inst_result) {
-		// Instantiation failed (missing import, etc.)
+		std::cerr << "[WASM] instantiation failed: " << inst_result.err().message() << std::endl;
 		return false;
 	}
 	auto instance = inst_result.ok();
@@ -443,11 +446,13 @@ bool run_wasm(Engine& engine)
 	// Step 6: Get "execute" export and call it
 	auto extern_opt = instance.get(store.context(), "execute");
 	if(!extern_opt) {
+		std::cerr << "[WASM] no execute export" << std::endl;
 		return false;
 	}
 	auto& func_extern = *extern_opt;
 	auto* func_ptr = std::get_if<wasmtime::Func>(&func_extern);
 	if(!func_ptr) {
+		std::cerr << "[WASM] execute is not a func" << std::endl;
 		return false;
 	}
 	auto& func = *func_ptr;
@@ -464,7 +469,9 @@ bool run_wasm(Engine& engine)
 		}
 	}
 
-	engine.gas_used = ctx.gas_used;
+	// Gas was charged by host functions via engine->write() (WRITE_COST)
+	// plus use_gas calls for INSTR_COST. Don't overwrite engine.gas_used.
+	std::cerr << "[WASM] executed OK, gas=" << engine.gas_used << ", instr=" << engine.code.size() << std::endl;
 	return true;
 }
 
@@ -486,42 +493,102 @@ void run_with_wasm_fallback(Engine& engine)
 {
 #ifdef WITH_WASM_JIT
 #ifdef WITH_WASM_SHADOW
-	// Shadow mode: run both, compare,100% match before trusting WASM
+	// Shadow mode: run interpreter first (canonical), then WASM for comparison.
+	// Interpreter runs on the clean engine state. Then we restore state and
+	// run WASM. This avoids all state corruption issues.
 	try {
-		// Save state before execution
 		const auto gas_before = engine.gas_used;
-		const auto outputs_before = engine.outputs;
-		const auto mint_before = engine.mint_outputs;
 
-		// Run WASM JIT
-		const bool wasm_ok = run_wasm(engine);
+		// Save entry point from call_stack (set by vm_interface before calling us)
+		const uint64_t entry_point = engine.call_stack.empty() ? 0 : engine.call_stack[0].instr_ptr;
 
-		// Save WASM results
-		const auto gas_after_wasm = engine.gas_used;
-		const auto outputs_after_wasm = engine.outputs;
-		const auto mint_after_wasm = engine.mint_outputs;
+		// Deep-copy memory before any execution
+		std::map<uint64_t, std::unique_ptr<var_t>> memory_backup;
+		for(auto& entry : engine.memory) {
+			if(entry.second) {
+				memory_backup[entry.first] = mmx::vm::clone(entry.second.get());
+			}
+		}
 
-		// Restore state and run interpreter
-		engine.gas_used = gas_before;
-		engine.outputs = outputs_before;
-		engine.mint_outputs = mint_before;
+		// Step 1: Run interpreter (canonical)
 		engine.run();
+		const auto gas_interpreter = engine.gas_used;
+		const auto outputs_interpreter = engine.outputs;
+		const auto mint_interpreter = engine.mint_outputs;
 
-		// Compare results
-		const bool gas_match = (gas_after_wasm == engine.gas_used);
-		const bool outputs_match = (outputs_after_wasm.size() == engine.outputs.size());
-		const bool mint_match = (mint_after_wasm.size() == engine.mint_outputs.size());
+		// Save interpreter's final memory state (for commit later)
+		std::map<uint64_t, std::unique_ptr<var_t>> memory_after_interpreter;
+		for(auto& entry : engine.memory) {
+			if(entry.second) {
+				memory_after_interpreter[entry.first] = mmx::vm::clone(entry.second.get());
+			}
+		}
+
+		// Step 2: Restore engine state for WASM
+		engine.gas_used = gas_before;
+		engine.outputs.clear();
+		engine.mint_outputs.clear();
+		engine.call_stack.clear();
+		engine.memory.clear();
+		engine.key_map.clear();
+		for(auto& entry : memory_backup) {
+			if(entry.second) {
+				engine.memory[entry.first] = mmx::vm::clone(entry.second.get());
+			}
+		}
+		// Rebuild key_map from restored memory (same as init() does)
+		for(auto iter = engine.memory.lower_bound(1); iter != engine.memory.lower_bound(MEM_EXTERN); ++iter) {
+			const auto* key = iter->second.get();
+			if(key && mmx::vm::num_bytes(key) <= MAX_KEY_BYTES) {
+				engine.key_map.emplace(key, iter->first);
+			}
+		}
+		engine.new_heap_base = uint64_t(1) << 32;
+
+		// Re-begin from entry point
+		engine.begin(entry_point);
+
+		// Step 3: Run WASM
+		const auto gas_after_wasm = engine.gas_used;
+		run_wasm(engine);
+		const auto gas_wasm = engine.gas_used;
+		const auto outputs_wasm = engine.outputs;
+		const auto mint_wasm = engine.mint_outputs;
+
+		// Step 4: Compare
+		const bool gas_match = (gas_wasm == gas_interpreter);
+		const bool outputs_match = (outputs_wasm.size() == outputs_interpreter.size());
+		const bool mint_match = (mint_wasm.size() == mint_interpreter.size());
 
 		if(!gas_match || !outputs_match || !mint_match) {
-			std::cerr << "[WASM SHADOW] MISMATCH: gas=" << gas_after_wasm
-				<< " vs " << engine.gas_used
-				<< ", outputs=" << outputs_after_wasm.size()
-				<< " vs " << engine.outputs.size()
-				<< ", mints=" << mint_after_wasm.size()
-				<< " vs " << engine.mint_outputs.size()
+			std::cerr << "[WASM SHADOW] MISMATCH: gas=" << gas_wasm
+				<< " vs " << gas_interpreter
+				<< ", outputs=" << outputs_wasm.size()
+				<< " vs " << outputs_interpreter.size()
+				<< ", mints=" << mint_wasm.size()
+				<< " vs " << mint_interpreter.size()
 				<< std::endl;
 		}
-		// Always use interpreter result (node stays canonical)
+
+		// Step 5: Restore interpreter state (node stays canonical)
+		engine.gas_used = gas_interpreter;
+		engine.outputs = std::move(outputs_interpreter);
+		engine.mint_outputs = std::move(mint_interpreter);
+		engine.call_stack.clear();
+		engine.memory.clear();
+		engine.key_map.clear();
+		for(auto& entry : memory_after_interpreter) {
+			if(entry.second) {
+				engine.memory[entry.first] = std::move(entry.second);
+			}
+		}
+		// Rebuild key_map from restored memory
+		for(auto iter = engine.memory.lower_bound(1); iter != engine.memory.lower_bound(MEM_EXTERN); ++iter) {
+			const auto* key = iter->second.get();
+			if(key && mmx::vm::num_bytes(key) <= MAX_KEY_BYTES) {
+				engine.key_map.emplace(key, iter->first);
+			}
+		}
 		return;
 	} catch(...) {
 		// WASM failed, fall through to interpreter

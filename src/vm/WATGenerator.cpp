@@ -407,7 +407,7 @@ void WATGenerator::emit_instruction(const instr_t& inst, std::vector<std::string
 				break;
 			case OP_VERIFY:
 				lines.push_back("    (call $op_verify (i32.const " + std::to_string(a) +
-					") (i32.const " + std::to_string(b) + ") (i32.const " + std::to_string(c) + "))");
+					") (i32.const " + std::to_string(b) + ") (i32.const " + std::to_string(c) + ") (i32.const " + std::to_string(d) + "))");
 				lines.push_back("    (call $use_gas (i32.const " + std::to_string(GAS_INSTR + GAS_ECDSA) + "))");
 				break;
 
@@ -555,7 +555,7 @@ void WATGenerator::emit_imports(std::ostringstream& out) {
 		out << "  (import \"env\" \"op_concat\" (func $op_concat (param i32 i32 i32)))\n";
 		out << "  (import \"env\" \"op_memcpy\" (func $op_memcpy (param i32 i32 i64 i64)))\n";
 		out << "  (import \"env\" \"op_sha256\" (func $op_sha256 (param i32 i32)))\n";
-		out << "  (import \"env\" \"op_verify\" (func $op_verify (param i32 i32 i32)))\n";
+		out << "  (import \"env\" \"op_verify\" (func $op_verify (param i32 i32 i32 i32)))\n";
 		out << "  (import \"env\" \"op_log\" (func $op_log (param i64 i32)))\n";
 		out << "  (import \"env\" \"op_send\" (func $op_send (param i32 i32 i32 i32)))\n";
 		out << "  (import \"env\" \"op_mint\" (func $op_mint (param i32 i32 i32)))\n";

@@ -19,12 +19,27 @@
 
 #include <mmx/vm/Engine.h>
 
+#ifdef WITH_WASM_JIT
+#include <wasmtime.hh>
+#endif
+
 namespace mmx {
 namespace vm {
 
 #ifdef WITH_WASM_JIT
 	/// Execute contract via WASM JIT. Returns true on success.
 	bool run_wasm(Engine& engine);
+
+	/// Host context for WASM execution (needed for benchmarking)
+	struct WASMHostContext {
+		Engine* engine;
+		uint64_t gas_limit;
+		bool out_of_gas = false;
+		bool failed = false;
+	};
+
+	/// Register all host functions into a wasmtime Linker.
+	void register_host_functions(wasmtime::Linker& linker, wasmtime::Store& store, WASMHostContext& ctx);
 #endif
 
 	/// Try WASM JIT first, fall back to interpreter. Drop-in for Engine::run().

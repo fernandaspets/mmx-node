@@ -79,7 +79,12 @@ enum globalvar_e : uint32_t {
 };
 
 
+class Engine;
+void run_with_wasm_fallback(Engine& engine);
+
 class Engine {
+	friend void run_with_wasm_fallback(Engine& engine);
+
 public:
 	struct frame_t {
 		uint64_t instr_ptr = 0;

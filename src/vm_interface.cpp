@@ -378,7 +378,11 @@ void set_args(std::shared_ptr<vm::Engine> engine, const std::vector<vnx::Variant
 void execute(std::shared_ptr<vm::Engine> engine, const contract::method_t& method, const bool commit)
 {
 	engine->begin(method.entry_point);
+#ifdef WITH_WASM_JIT
 	vm::run_with_wasm_fallback(*engine);
+#else
+	engine->run();
+#endif
 
 	if(!method.is_const && commit) {
 		engine->commit();
