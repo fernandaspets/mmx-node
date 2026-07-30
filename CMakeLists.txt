@@ -323,6 +323,44 @@ if(CUDA_FOUND)
 	endif()
 endif()
 
+# --- HIP / ROCm support for AMD GPU proof recompute ---
+option(WITH_HIP "Enable HIP/ROCm for AMD GPU proof recompute" OFF)
+if(WITH_HIP)
+	add_compile_definitions(WITH_HIP)
+	add_compile_definitions(__HIP_PLATFORM_AMD__ HIP_ENABLE_WARP_SYNC_BUILTINS=1)
+
+	# Auto-detect GPU arch or use -DGPU_ARCH=gfx1100
+	# Must set CMAKE_HIP_ARCHS as CACHE BEFORE enable_language(HIP)
+	if(DEFINED GPU_ARCH)
+		set(_HIP_ARCH "${GPU_ARCH}")
+	elseif(DEFINED ENV{GPU_ARCH})
+		set(_HIP_ARCH "$ENV{GPU_ARCH}")
+	else()
+		execute_process(
+			COMMAND bash -c "rocminfo 2>/dev/null | grep 'gfx' | head -1 | awk '{print \$2}' || echo gfx1100"
+			OUTPUT_VARIABLE DETECTED_HIP_ARCH
+			OUTPUT_STRIP_TRAILING_WHITESPACE
+		)
+		if(DETECTED_HIP_ARCH AND DETECTED_HIP_ARCH MATCHES "^gfx")
+			set(_HIP_ARCH "${DETECTED_HIP_ARCH}")
+			message(STATUS "Auto-detected HIP architecture: ${DETECTED_HIP_ARCH}")
+		else()
+			set(_HIP_ARCH "gfx1100")
+			message(STATUS "Using default HIP architecture: gfx1100")
+		endif()
+	endif()
+	set(CMAKE_HIP_ARCHS "${_HIP_ARCH}" CACHE STRING "HIP target architectures")
+	set(CMAKE_HIP_ARCHITECTURES "${_HIP_ARCH}" CACHE STRING "HIP target architectures")
+
+	enable_language(HIP)
+	set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -Wno-pass-failed -Wno-unused-result")
+
+	add_library(mmx_pos_hip STATIC src/pos/hip_recompute.hip)
+	target_include_directories(mmx_pos_hip PUBLIC include)
+	target_link_libraries(mmx_pos mmx_pos_hip)
+	target_link_libraries(mmx_pos_hip mmx_pos_verify mmx_iface)
+endif()
+
 if(JEMALLOC_LIB)
 	message(STATUS "Found jemalloc")
 	target_link_libraries(mmx_modules ${JEMALLOC_LIB})

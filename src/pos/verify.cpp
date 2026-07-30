@@ -14,6 +14,10 @@
 #include <mmx/pos/cuda_recompute.h>
 #endif
 
+#ifdef WITH_HIP
+#include <mmx/pos/hip_recompute.h>
+#endif
+
 #include <mmx/ProofServerClient.hxx>
 
 #include <set>
@@ -139,6 +143,23 @@ compute(const std::vector<uint32_t>& X_values, std::vector<uint32_t>* X_out, con
 		if(res) {
 			if(res->failed) {
 				throw std::runtime_error("CUDA failed with: " + res->error);
+			}
+			if(X_out) {
+				*X_out = res->X;
+			}
+			return res->entries;
+		}
+	}
+#endif
+
+#ifdef WITH_HIP
+	if(have_hip_recompute() && X_values.size() == 256)
+	{
+		const auto job = hip_recompute(ksize, xbits, id, X_values);
+		const auto res = hip_recompute_poll({job});
+		if(res) {
+			if(res->failed) {
+				throw std::runtime_error("HIP failed with: " + res->error);
 			}
 			if(X_out) {
 				*X_out = res->X;

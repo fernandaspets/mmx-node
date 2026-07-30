@@ -34,6 +34,10 @@
 #include <mmx/pos/cuda_recompute.h>
 #endif
 
+#ifdef WITH_HIP
+#include <mmx/pos/hip_recompute.h>
+#endif
+
 
 int main(int argc, char** argv)
 {
@@ -106,6 +110,13 @@ int main(int argc, char** argv)
 	mmx::pos::cuda_recompute_init();
 #else
 	vnx::log_info() << "CUDA available: no";
+#endif
+
+#ifdef WITH_HIP
+	vnx::log_info() << "HIP available: yes";
+	mmx::pos::hip_recompute_init();
+#else
+	vnx::log_info() << "HIP available: no";
 #endif
 
 	vnx::log_info() << "Remote service access is: " << (allow_remote ? "enabled on " + endpoint : "disabled");
@@ -242,6 +253,10 @@ int main(int argc, char** argv)
 
 #ifdef WITH_CUDA
 	mmx::pos::cuda_recompute_shutdown();
+#endif
+
+#ifdef WITH_HIP
+	mmx::pos::hip_recompute_shutdown();
 #endif
 
 	mmx::secp256k1_free();
